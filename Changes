@@ -2,6 +2,14 @@ Revision history for Roaring::Tags
 
 {{$NEXT}}
 
+0.1.1  2026-04-07T19:40:38+01:00
+    - Added Windows CI support via MSVC
+    - Fixed AND/OR precedence: AND (comma) now binds tighter than OR
+    - Universe bitmap shrinks on untag/untag-many/remove-value
+    - Fixed ghost entries in croaring_remove_docs_from_index (bitmap lookup)
+    - query() now returns owned clones, not live bitmaps
+    - Exception-safe bitmap cleanup in query execution
+
 0.1.0  2026-04-07T18:47:18+01:00
     - Initial release
     - Boolean, categorical, and numeric tag support
