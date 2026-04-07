@@ -1,0 +1,195 @@
+use Test;
+use lib 'lib', '../CRoaring/lib';
+use Roaring::Tags;
+use Roaring::Tags::Query;
+use CRoaring;
+
+plan 17;
+
+sub make-db(--> Roaring::Tags:D) {
+	my Roaring::Tags $t .= new;
+	$t.tag-many('a', [1, 2, 3]);
+	$t.tag-many('b', [2, 3, 4]);
+	$t.tag-many('c', [5, 6, 7]);
+	$t.tag-many('d', [6, 7, 8]);
+	$t.tag-many('e', [1, 2, 3, 4, 5, 6, 7, 8]);
+	$t.tag-many('x', [3, 7]);
+	for 1..8 -> Int $i {
+		$t.set-value('score', $i, $i * 10);
+	}
+	$t;
+}
+
+subtest '(a, b) OR (c, d) — union of two AND groups' => {
+	plan 1;
+	my Roaring::Tags $db = make-db();
+	# a∩b = {2,3}, c∩d = {6,7}, union = {2,3,6,7}
+	my CRoaring $r = $db.search('(a, b) OR (c, d)');
+	is-deeply $r.to-array.List, (2, 3, 6, 7), 'Union of two AND groups';
+};
+
+subtest '(a, b) OR (c, d), e — OR result ANDed with e' => {
+	plan 1;
+	my Roaring::Tags $db = make-db();
+	# (a∩b)∪(c∩d) = {2,3,6,7}, ∩ e = {2,3,6,7} (all in e)
+	my CRoaring $r = $db.search('(a, b) OR (c, d), e');
+	is-deeply $r.to-array.List, (2, 3, 6, 7), 'OR ANDed with top-level term';
+};
+
+subtest '(a) OR (b) OR (c) — three-way OR' => {
+	plan 1;
+	my Roaring::Tags $db = make-db();
+	# a={1,2,3}, b={2,3,4}, c={5,6,7} → union = {1,2,3,4,5,6,7}
+	my CRoaring $r = $db.search('(a) OR (b) OR (c)');
+	is-deeply $r.to-array.List, (1, 2, 3, 4, 5, 6, 7), 'Three-way OR';
+};
+
+subtest '(a, b) OR (c, d), -x — AND binds tighter, -x applies to second group' => {
+	plan 1;
+	my Roaring::Tags $db = make-db();
+	# New precedence: (a∩b) OR ((c∩d) ANDNOT x)
+	# a∩b={2,3}, (c∩d)={6,7} ANDNOT x={3,7} → {6}
+	# union = {2,3,6}
+	my CRoaring $r = $db.search('(a, b) OR (c, d), -x');
+	is-deeply $r.to-array.List, (2, 3, 6), '-x binds to second AND group';
+};
+
+subtest 'Nested parens: ((a, b) OR (c, d)), e' => {
+	plan 1;
+	my Roaring::Tags $db = make-db();
+	my CRoaring $r = $db.search('((a, b) OR (c, d)), e');
+	is-deeply $r.to-array.List, (2, 3, 6, 7), 'Nested parens work';
+};
+
+subtest 'Single group: (a, b) — equivalent to a, b' => {
+	plan 1;
+	my Roaring::Tags $db = make-db();
+	my CRoaring $grouped = $db.search('(a, b)');
+	my CRoaring $flat = $db.search('a, b');
+	ok $grouped.equals($flat), 'Single group = flat AND';
+};
+
+subtest 'OR with numeric: (a, score:>50) OR (c, score:<30)' => {
+	plan 1;
+	my Roaring::Tags $db = make-db();
+	# a={1,2,3} ∩ score>50={6,7,8} = {} (a has 1,2,3 with scores 10,20,30)
+	# c={5,6,7} ∩ score<30={1,2} = {} (c has 5,6,7 with scores 50,60,70)
+	# union = {}
+	my CRoaring $r = $db.search('(a, score:>50) OR (c, score:<30)');
+	ok $r.is-empty, 'OR with numeric — no matches';
+};
+
+subtest 'OR with numeric — has matches' => {
+	plan 1;
+	my Roaring::Tags $db = make-db();
+	# a={1,2,3} ∩ score:>=20={2..8} = {2,3}
+	# c={5,6,7} ∩ score:>=60={6,7,8} = {6,7}
+	# union = {2,3,6,7}
+	my CRoaring $r = $db.search('(a, score:>=20) OR (c, score:>=60)');
+	is-deeply $r.to-array.List, (2, 3, 6, 7), 'OR with numeric matches';
+};
+
+subtest 'OR with negation inside group: (a, -x) OR (c, -x)' => {
+	plan 1;
+	my Roaring::Tags $db = make-db();
+	# a={1,2,3} ANDNOT x={3,7} = {1,2}
+	# c={5,6,7} ANDNOT x={3,7} = {5,6}
+	# union = {1,2,5,6}
+	my CRoaring $r = $db.search('(a, -x) OR (c, -x)');
+	is-deeply $r.to-array.List, (1, 2, 5, 6), 'Negation inside OR groups';
+};
+
+subtest 'Explain shows OR structure' => {
+	plan 2;
+	my Roaring::Tags $db = make-db();
+	my Roaring::Tags::Query $q .= new(:tags($db), :query-string('(a, b) OR (c, d), e'));
+	my Str:D $e = $q.explain;
+	ok $e.contains('OR'), 'Explain contains OR';
+	ok $e.contains('AND'), 'Explain contains AND';
+};
+
+subtest 'Complex real-world query — use parens to apply filters to both sides' => {
+	plan 1;
+	my Roaring::Tags $t .= new;
+	$t.tag-many('landscape', [1, 2, 3, 4, 5]);
+	$t.tag-many('hdr', [1, 3, 5, 7, 9]);
+	$t.tag-many('portrait', [6, 7, 8, 9, 10]);
+	$t.tag-many('bokeh', [7, 8, 10]);
+	$t.tag-many('violent', [3, 9]);
+	for 1..10 -> Int $i { $t.set-value('score', $i, $i * 20) }
+
+	# To apply filters to the whole OR, wrap in parens:
+	# ((landscape, hdr) OR (portrait, bokeh)), score:>100, -violent
+	# landscape∩hdr = {1,3,5}, portrait∩bokeh = {7,8,10}
+	# union = {1,3,5,7,8,10}
+	# ∩ score>100 = {6..10} → {7,8,10}
+	# ANDNOT violent={3,9} → {7,8,10}
+	my CRoaring $r = $t.search('((landscape, hdr) OR (portrait, bokeh)), score:>100, -violent');
+	is-deeply $r.to-array.List, (7, 8, 10), 'Parens group OR before applying filters';
+};
+
+subtest 'Mismatched parens dies' => {
+	plan 1;
+	my Roaring::Tags $db = make-db();
+	dies-ok { $db.search('(a, b') }, 'Mismatched parens dies';
+};
+
+# --- Bare OR (no parens required) ---
+
+subtest 'Bare OR: a OR c' => {
+	plan 1;
+	my Roaring::Tags $db = make-db();
+	# a={1,2,3}, c={5,6,7} → union = {1,2,3,5,6,7}
+	my CRoaring $r = $db.search('a OR c');
+	is-deeply $r.to-array.List, (1, 2, 3, 5, 6, 7), 'Bare a OR c works';
+};
+
+subtest 'Bare OR with AND: a OR c, e — AND binds tighter' => {
+	plan 1;
+	my Roaring::Tags $db = make-db();
+	# AND binds tighter: a OR (c AND e)
+	# c={5,6,7}, e={1..8}, c∩e={5,6,7}
+	# a={1,2,3} ∪ {5,6,7} = {1,2,3,5,6,7}
+	my CRoaring $r = $db.search('a OR c, e');
+	is-deeply $r.to-array.List, (1, 2, 3, 5, 6, 7), 'AND binds tighter than OR';
+};
+
+subtest 'Mixed bare and grouped OR: a OR (c, d)' => {
+	plan 1;
+	my Roaring::Tags $db = make-db();
+	# a={1,2,3}, c∩d={6,7} → union = {1,2,3,6,7}
+	my CRoaring $r = $db.search('a OR (c, d)');
+	is-deeply $r.to-array.List, (1, 2, 3, 6, 7), 'Bare atom OR grouped AND';
+};
+
+# --- Explicit precedence tests ---
+
+subtest 'Precedence: AND binds tighter than OR' => {
+	plan 2;
+	my Roaring::Tags $t .= new;
+	$t.tag-many('a', [1, 2, 3]);
+	$t.tag-many('b', [2, 3, 4]);
+	$t.tag-many('c', [5, 6]);
+
+	# "a OR b, c" should parse as "a OR (b AND c)" not "(a OR b) AND c"
+	# b∩c = {} (no overlap), so a OR {} = {1,2,3}
+	# If wrong precedence: (a∪b)∩c = {1,2,3,4}∩{5,6} = {}
+	my CRoaring $r = $t.search('a OR b, c');
+	is $r.cardinality, 3, 'a OR b,c = a OR (b AND c) = {1,2,3}';
+
+	# Verify with parens that override: (a OR b), c
+	my CRoaring $r2 = $t.search('(a OR b), c');
+	is $r2.cardinality, 0, '(a OR b), c = (a∪b) AND c = {}';
+};
+
+subtest 'Precedence: three-way with mixed operators' => {
+	plan 1;
+	my Roaring::Tags $t .= new;
+	$t.tag-many('x', [1, 2]);
+	$t.tag-many('y', [2, 3]);
+	$t.tag-many('z', [3, 4]);
+
+	# "x, y OR z" = (x AND y) OR z = {2} OR {3,4} = {2,3,4}
+	my CRoaring $r = $t.search('x, y OR z');
+	is-deeply $r.to-array.List, (2, 3, 4), 'x,y OR z = (x AND y) OR z';
+};

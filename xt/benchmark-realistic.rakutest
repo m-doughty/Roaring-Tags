@@ -1,0 +1,206 @@
+use Test;
+use lib 'lib', '../CRoaring/lib';
+use Roaring::Tags;
+use Roaring::Tags::Query;
+use Roaring::Tags::Storage;
+
+plan 1;
+use CRoaring;
+use CRoaring::FFI;
+use NativeCall;
+
+sub time-ms(&block --> Num:D) {
+	my Instant $start = now;
+	block();
+	(now - $start) * 1000;
+}
+
+my Int:D $num-docs = 1_000_000;
+my Int:D $num-tags = 10_000;
+
+say "=== Realistic Benchmark: {$num-docs} docs, {$num-tags} tags ===";
+say "";
+
+# ============================================================
+# SCENARIO 1: Initial bulk load
+# ============================================================
+say "--- Scenario 1: Initial bulk load ---";
+
+my Roaring::Tags $db .= new;
+
+my Num:D $tag-ms = time-ms({
+	for ^$num-tags -> Int $tag-idx {
+		my Int:D $count = ($num-docs / ($tag-idx + 1)).Int max 1;
+		my Int:D $step = ($num-docs / $count).Int max 1;
+		my Int:D $offset = $tag-idx % $step;
+		my Int:D $actual-count = (($num-docs - $offset - 1) / $step).Int + 1;
+		$actual-count = $actual-count min $count;
+		my Buf[uint32] $buf .= new;
+		loop (my Int $i = 0; $i < $actual-count; $i++) {
+			$buf[$i] = $offset + $i * $step;
+		}
+		my CRoaring $bm .= new;
+		roaring_bitmap_add_many($bm.handle, $actual-count, nativecast(CArray[uint32], $buf));
+		$db.bitmap-store{"tag_{$tag-idx}"} = $bm;
+	}
+});
+say "  Tags bulk load: {$tag-ms.round}ms";
+
+my Num:D $score-ms = time-ms({
+	my @pairs;
+	@pairs[$num-docs - 1] = Nil;
+	for ^$num-docs -> Int $i {
+		@pairs[$i] = [$i, ($i * 7 + 13) % 1000];
+	}
+	$db.set-values('score', @pairs);
+});
+say "  Numeric scores bulk load: {$score-ms.round}ms";
+say "  Total initial load: {($tag-ms + $score-ms).round}ms";
+say "  tag_0: {$db.count('tag_0')} docs";
+say "  tag_100: {$db.count('tag_100')} docs";
+
+# ============================================================
+# SCENARIO 2: Incremental updates (simulating new images added)
+# ============================================================
+say "";
+say "--- Scenario 2: Incremental updates ---";
+
+# Add 1000 new docs to 5 random tags each
+my Num:D $incr-tag-ms = time-ms({
+	for ($num-docs ..^ $num-docs + 1000) -> Int $doc-id {
+		for (0, 1, 2, 3, 4) -> Int $t {
+			my Int:D $tag-idx = ($doc-id * 3 + $t * 7) % $num-tags;
+			$db.tag("tag_{$tag-idx}", $doc-id);
+		}
+	}
+});
+say "  Add 1000 docs x 5 tags each (individual): {$incr-tag-ms.round}ms";
+
+# Bulk add 10000 docs to one tag
+my Num:D $incr-bulk-ms = time-ms({
+	$db.tag-many('tag_new_bulk', ($num-docs ..^ $num-docs + 10000).list);
+});
+say "  Bulk add 10K docs to 1 tag: {$incr-bulk-ms.round}ms";
+
+# Update 1000 numeric scores
+my Num:D $incr-score-ms = time-ms({
+	my @updates = (^1000).map({ [$_, 999] });
+	$db.set-values('score', @updates);
+});
+say "  Update 1000 scores: {$incr-score-ms.round}ms";
+
+# Delete 100 docs
+my Num:D $delete-ms = time-ms({
+	for ^100 -> Int $doc-id {
+		$db.remove-doc($doc-id);
+	}
+});
+say "  Delete 100 docs: {$delete-ms.round}ms";
+
+# ============================================================
+# SCENARIO 3: Range queries - narrow vs wide
+# ============================================================
+say "";
+say "--- Scenario 3: Range queries ---";
+
+# Narrow range: score 500..510 (expect ~1% of docs)
+my CRoaring $narrow;
+my Num:D $narrow-ms = time-ms({
+	$narrow = $db.range('score', :gte(500), :lte(510));
+});
+say "  Narrow (score 500..510): {$narrow.cardinality} results in {$narrow-ms.round(1)}ms";
+
+# Medium range: score 300..700 (expect ~40% of docs)
+my CRoaring $medium;
+my Num:D $medium-ms = time-ms({
+	$medium = $db.range('score', :gte(300), :lte(700));
+});
+say "  Medium (score 300..700): {$medium.cardinality} results in {$medium-ms.round(1)}ms";
+
+# Wide range: score > 100 (expect ~90% of docs)
+my CRoaring $wide;
+my Num:D $wide-ms = time-ms({
+	$wide = $db.range('score', :gt(100));
+});
+say "  Wide (score > 100): {$wide.cardinality} results in {$wide-ms.round(1)}ms";
+
+# Repeated narrow range (10 queries)
+my Num:D $repeated-ms = time-ms({
+	for ^10 -> Int $i {
+		my Int:D $base = $i * 100;
+		$db.range('score', :gte($base), :lt($base + 10));
+	}
+});
+say "  10x narrow ranges: {$repeated-ms.round(1)}ms total ({($repeated-ms / 10).round(1)}ms avg)";
+
+# ============================================================
+# SCENARIO 4: Complex search queries
+# ============================================================
+say "";
+say "--- Scenario 4: Complex search queries ---";
+
+my CRoaring $r;
+
+my Num:D $simple-ms = time-ms({ $r = $db.search('tag_0, tag_1') });
+say "  Simple AND (2 popular): {$r.cardinality} results in {$simple-ms.round(1)}ms";
+
+my Num:D $or-ms = time-ms({ $r = $db.search('tag_100 OR tag_200') });
+say "  Simple OR (2 tags): {$r.cardinality} results in {$or-ms.round(1)}ms";
+
+my Num:D $complex-ms = time-ms({
+	$r = $db.search('(tag_0, tag_100) OR (tag_1, tag_200), score:>500, -tag_500');
+});
+say "  Complex (OR + range + neg): {$r.cardinality} results in {$complex-ms.round(1)}ms";
+
+my Num:D $booru-ms = time-ms({
+	$r = $db.search('tag_50 OR tag_100, score:>200, -tag_9999');
+});
+say "  Booru-style search: {$r.cardinality} results in {$booru-ms.round(1)}ms";
+
+# ============================================================
+# SCENARIO 5: Serialize / Deserialize round-trip
+# ============================================================
+say "";
+say "--- Scenario 5: Serialize / Deserialize ---";
+
+my IO::Path $save-dir = $*TMPDIR.add("roaring-bench-save-{$*PID}");
+
+my Num:D $save-ms = time-ms({ $db.save($save-dir) });
+say "  Save to disk: {$save-ms.round}ms";
+
+# Measure directory size
+my Int:D $total-bytes = 0;
+sub dir-size(IO::Path $path) {
+	for $path.dir -> IO::Path $child {
+		if $child.d { dir-size($child) }
+		elsif $child.f { $total-bytes += $child.s }
+	}
+}
+dir-size($save-dir);
+say "  On-disk size: {($total-bytes / 1024 / 1024).round(1)}MB";
+
+my Roaring::Tags $loaded;
+my Num:D $load-ms = time-ms({ $loaded = Roaring::Tags.load($save-dir) });
+say "  Load from disk: {$load-ms.round}ms";
+
+# Verify loaded data
+say "  Loaded tag_0: {$loaded.count('tag_0')} docs";
+my CRoaring $verify;
+my Num:D $verify-ms = time-ms({
+	$verify = $loaded.search('tag_0, tag_100, score:>500');
+});
+say "  Query after load: {$verify.cardinality} results in {$verify-ms.round(1)}ms";
+
+# Cleanup
+sub rm-rf(IO::Path $path) {
+	if $path.d {
+		for $path.dir -> IO::Path $child { rm-rf($child) }
+		$path.rmdir;
+	} elsif $path.e { $path.unlink }
+}
+rm-rf($save-dir);
+
+say "";
+say "=== Done ===";
+
+pass 'Benchmark complete';

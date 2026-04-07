@@ -1,0 +1,13 @@
+Revision history for Roaring::Tags
+
+{{$NEXT}}
+
+0.1.0  2026-04-07T18:47:18+01:00
+    - Initial release
+    - Boolean, categorical, and numeric tag support
+    - Raku grammar query parser with OR, parentheses, negation
+    - Execution planner with smallest-first optimization
+    - Universe bitmap for negative-only queries
+    - NumericIndex with C-accelerated radix sort and bitmap-based remove
+    - Directory-based persistence (save/load)
+    - Query explain for debugging

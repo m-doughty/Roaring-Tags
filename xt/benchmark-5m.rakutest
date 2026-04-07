@@ -1,0 +1,108 @@
+use Test;
+use lib 'lib', '../CRoaring/lib';
+use Roaring::Tags;
+use Roaring::Tags::Query;
+use CRoaring;
+
+plan 1;
+use CRoaring::FFI;
+use NativeCall;
+
+sub time-ms(&block --> Num:D) {
+	my Instant $start = now;
+	block();
+	($start, ((now - $start) * 1000));
+}
+
+my Int:D $num-docs = 5_000_000;
+my Int:D $num-tags = 10_000;
+
+say "=== Roaring::Tags Benchmark: {$num-docs} docs, {$num-tags} tags ===";
+say "";
+
+my Roaring::Tags $db .= new;
+
+# --- Phase 1: Tag setup ---
+say "--- Phase 1: Building tags (Zipf distribution) ---";
+
+my $phase1-start = now;
+for ^$num-tags -> Int $tag-idx {
+	my Int:D $count = ($num-docs / ($tag-idx + 1)).Int max 1;
+	my Int:D $step = ($num-docs / $count).Int max 1;
+	my Int:D $offset = $tag-idx % $step;
+
+	# Build IDs directly into Buf[uint32] — skip Raku array
+	my Int:D $actual-count = (($num-docs - $offset - 1) / $step).Int + 1;
+	$actual-count = $actual-count min $count;
+	my Buf[uint32] $buf .= new;
+	loop (my Int $i = 0; $i < $actual-count; $i++) {
+		$buf[$i] = $offset + $i * $step;
+	}
+
+	my CRoaring $bm .= new;
+	roaring_bitmap_add_many($bm.handle, $actual-count, nativecast(CArray[uint32], $buf));
+	# Directly set bitmap in the store
+	$db.bitmap-store{"tag_{$tag-idx}"} = $bm;
+
+	if $tag-idx %% 1000 {
+		say "  tag_{$tag-idx}: {$bm.cardinality} docs ({((now - $phase1-start) * 1000).round}ms elapsed)";
+	}
+}
+say "  Tags done: {((now - $phase1-start) * 1000).round}ms";
+
+# --- Phase 2: Numeric scores ---
+say "";
+say "--- Phase 2: Setting {$num-docs} numeric scores ---";
+my $phase2-start = now;
+
+# Build pairs as [doc-id, value]
+my @pairs;
+@pairs[$num-docs - 1] = Nil; # pre-size
+for ^$num-docs -> Int $i {
+	@pairs[$i] = [$i, ($i * 7 + 13) % 1000];
+}
+say "  Pairs built: {((now - $phase2-start) * 1000).round}ms";
+
+my $insert-start = now;
+$db.set-values('score', @pairs);
+say "  insert-many: {((now - $insert-start) * 1000).round}ms";
+say "  Total numeric setup: {((now - $phase2-start) * 1000).round}ms";
+
+my $total-setup = ((now - $phase1-start) * 1000).round;
+say "";
+say "  TOTAL SETUP: {$total-setup}ms ({($total-setup / 1000).round(1)}s)";
+say "  tag_0: {$db.count('tag_0')} docs";
+say "  tag_100: {$db.count('tag_100')} docs";
+say "  tag_1000: {$db.count('tag_1000')} docs";
+say "  tag_9999: {$db.count('tag_9999')} docs";
+
+# --- Phase 3: Query benchmarks ---
+say "";
+say "--- Phase 3: Query benchmarks ---";
+
+sub bench(Str:D $label, Str:D $query) {
+	my CRoaring $r;
+	my $start = now;
+	$r = $db.search($query);
+	my Num:D $ms = (now - $start) * 1000;
+	say "  {$label}: {$r.cardinality} results in {$ms.round(1)}ms";
+}
+
+bench("2 popular AND", "tag_0, tag_1");
+bench("2 rare AND", "tag_5000, tag_8000");
+bench("popular ANDNOT rare", "tag_0, -tag_5000");
+bench("numeric range", "tag_0, score:>500");
+bench("OR query", "(tag_0, tag_5000) OR (tag_1, tag_8000)");
+bench("complex mixed", "(tag_0, tag_100) OR (tag_1, tag_200), score:>100, -tag_500");
+bench("deeply nested", "((tag_0, tag_1) OR (tag_2, tag_3)), ((tag_4, tag_5) OR (tag_6, tag_7))");
+
+# --- Explain ---
+say "";
+say "--- Explain ---";
+my $q = Roaring::Tags::Query.new(
+	:tags($db),
+	:query-string('(tag_0, tag_100) OR (tag_1, tag_200), score:>100, -tag_500')
+);
+say $q.explain;
+
+pass 'Benchmark complete';

@@ -1,0 +1,69 @@
+use Test;
+use lib 'lib', '../CRoaring/lib';
+use Roaring::Tags;
+
+plan 7;
+
+subtest 'tags lists all keys' => {
+	plan 1;
+	my Roaring::Tags $t .= new;
+	$t.tag('nsfw', 1);
+	$t.tag('genre:fantasy', 2);
+	$t.tag('violent', 3);
+	is-deeply $t.tags.List, ('genre:fantasy', 'nsfw', 'violent'), 'All keys sorted';
+};
+
+subtest 'boolean-tags filters correctly' => {
+	plan 1;
+	my Roaring::Tags $t .= new;
+	$t.tag('nsfw', 1);
+	$t.tag('genre:fantasy', 2);
+	$t.tag('violent', 3);
+	is-deeply $t.boolean-tags.List, ('nsfw', 'violent'), 'Only boolean tags';
+};
+
+subtest 'fields includes categorical and numeric' => {
+	plan 2;
+	my Roaring::Tags $t .= new;
+	$t.tag('genre:fantasy', 1);
+	$t.set-value('score', 1, 100);
+	my @f = $t.fields;
+	ok 'genre' (elem) @f, 'Categorical field present';
+	ok 'score' (elem) @f, 'Numeric field present';
+};
+
+subtest 'numeric-fields' => {
+	plan 1;
+	my Roaring::Tags $t .= new;
+	$t.set-value('score', 1, 100);
+	$t.set-value('tokens', 1, 500);
+	is-deeply $t.numeric-fields.List, ('score', 'tokens'), 'Numeric fields sorted';
+};
+
+subtest 'doc-tags returns tags for document' => {
+	plan 1;
+	my Roaring::Tags $t .= new;
+	$t.tag('nsfw', 42);
+	$t.tag('genre:fantasy', 42);
+	$t.tag('violent', 99);  # different doc
+	is-deeply $t.doc-tags(42).List, ('genre:fantasy', 'nsfw'), 'Correct tags for doc 42';
+};
+
+subtest 'doc-values returns numeric values' => {
+	plan 2;
+	my Roaring::Tags $t .= new;
+	$t.set-value('score', 42, 150);
+	$t.set-value('tokens', 42, 2000);
+	my %v = $t.doc-values(42);
+	is %v<score>, 150, 'Score correct';
+	is %v<tokens>, 2000, 'Tokens correct';
+};
+
+subtest 'count per tag' => {
+	plan 2;
+	my Roaring::Tags $t .= new;
+	$t.tag-many('nsfw', [1, 2, 3]);
+	$t.tag-many('safe', [4, 5]);
+	is $t.count('nsfw'), 3, 'nsfw count';
+	is $t.count('safe'), 2, 'safe count';
+};

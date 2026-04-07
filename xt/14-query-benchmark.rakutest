@@ -1,0 +1,123 @@
+use Test;
+use lib 'lib', '../CRoaring/lib';
+use Roaring::Tags;
+use Roaring::Tags::Query;
+use CRoaring;
+
+plan 9;
+
+sub time-ms(&block --> Num:D) {
+	my Instant $start = now;
+	block();
+	my Instant $end = now;
+	($end - $start) * 1000;
+}
+
+# === Setup: 1M docs, 50K tags, Zipf-like distribution ===
+
+my Roaring::Tags $db .= new;
+my Int:D $num-docs = 100_000;
+my Int:D $num-tags = 10_000;
+
+subtest 'Setup: 1M docs, 50K tags, long-tail distribution' => {
+	plan 1;
+	my Num:D $ms = time-ms({
+		# Zipf-like: tag i gets ~num_docs/(i+1) docs, evenly spaced
+		for ^$num-tags -> Int $tag-idx {
+			my Int:D $count = ($num-docs / ($tag-idx + 1)).Int max 1;
+			my Int:D $step = ($num-docs / $count).Int max 1;
+			my Int:D $offset = $tag-idx % $step;
+			# Build ID list using sequence with step — avoids per-element push
+			my @ids = ($offset, $offset + $step ... * >= $num-docs);
+			@ids = @ids.head($count) if @ids.elems > $count;
+			$db.tag-many("tag_{$tag-idx}", @ids);
+		}
+
+		# Scores: batch via set-values with pre-built pairs
+		my @pairs = (^$num-docs).map({ [$_, ($_ * 7 + 13) % 1000] });
+		$db.set-values('score', @pairs);
+	});
+	ok $ms < 120_000, "Setup in {($ms / 1000).round(1)}s";
+	diag "  Setup 100K docs, 10K tags: {($ms / 1000).round(1)}s";
+	diag "  tag_0 (most popular): {$db.count('tag_0')} docs";
+	diag "  tag_100: {$db.count('tag_100')} docs";
+	diag "  tag_1000: {$db.count('tag_1000')} docs";
+	diag "  tag_5000: {$db.count('tag_5000')} docs";
+	diag "  tag_9999 (rarest): {$db.count('tag_9999')} docs";
+};
+
+subtest 'Simple AND: 2 popular tags' => {
+	plan 1;
+	my CRoaring $r;
+	my Num:D $ms = time-ms({ $r = $db.search('tag_0, tag_1') });
+	ok $ms < 5000, "2 popular tags AND in {$ms.round(1)}ms";
+	diag "  tag_0 AND tag_1: {$r.cardinality} results in {$ms.round(1)}ms";
+};
+
+subtest 'Simple AND: 2 rare tags' => {
+	plan 1;
+	my CRoaring $r;
+	my Num:D $ms = time-ms({ $r = $db.search('tag_5000, tag_8000') });
+	ok $ms < 5000, "2 rare tags AND in {$ms.round(1)}ms";
+	diag "  tag_5000 AND tag_8000: {$r.cardinality} results in {$ms.round(1)}ms";
+};
+
+subtest 'AND with negation: popular minus rare' => {
+	plan 1;
+	my CRoaring $r;
+	my Num:D $ms = time-ms({ $r = $db.search('tag_0, -tag_5000') });
+	ok $ms < 5000, "Popular ANDNOT rare in {$ms.round(1)}ms";
+	diag "  tag_0 ANDNOT tag_5000: {$r.cardinality} results in {$ms.round(1)}ms";
+};
+
+subtest 'Numeric range: score:>500 across 1M docs' => {
+	plan 1;
+	my CRoaring $r;
+	my Num:D $ms = time-ms({ $r = $db.search('tag_0, score:>500') });
+	ok $ms < 5000, "Numeric range in {$ms.round(1)}ms";
+	diag "  tag_0 AND score>500: {$r.cardinality} results in {$ms.round(1)}ms";
+};
+
+subtest 'OR query: (popular, rare) OR (popular2, rare2)' => {
+	plan 1;
+	my CRoaring $r;
+	my Num:D $ms = time-ms({
+		$r = $db.search('(tag_0, tag_5000) OR (tag_1, tag_8000)');
+	});
+	ok $ms < 5000, "OR query in {$ms.round(1)}ms";
+	diag "  (tag_0,tag_5000) OR (tag_1,tag_8000): {$r.cardinality} results in {$ms.round(1)}ms";
+};
+
+subtest 'Complex mixed: OR + numeric + negation' => {
+	plan 1;
+	my CRoaring $r;
+	my Num:D $ms = time-ms({
+		$r = $db.search('(tag_0, tag_100) OR (tag_1, tag_200), score:>100, -tag_500');
+	});
+	ok $ms < 5000, "Complex query in {$ms.round(1)}ms";
+	diag "  Complex mixed: {$r.cardinality} results in {$ms.round(1)}ms";
+};
+
+subtest 'Deeply nested: ((a,b) OR (c,d)), ((e,f) OR (g,h))' => {
+	plan 1;
+	my CRoaring $r;
+	my Num:D $ms = time-ms({
+		$r = $db.search('((tag_0, tag_1) OR (tag_2, tag_3)), ((tag_4, tag_5) OR (tag_6, tag_7))');
+	});
+	ok $ms < 5000, "Deeply nested in {$ms.round(1)}ms";
+	diag "  Deeply nested: {$r.cardinality} results in {$ms.round(1)}ms";
+};
+
+subtest 'Explain for complex query' => {
+	plan 1;
+	my Roaring::Tags::Query $q .= new(
+		:tags($db),
+		:query-string('(tag_0, tag_100) OR (tag_1, tag_200), score:>100, -tag_500')
+	);
+	my Str:D $e = $q.explain;
+	ok $e.contains('OR'), 'Explain shows OR structure';
+	diag "  Explain output:";
+	for $e.lines -> Str $line {
+		diag "    $line";
+	}
+};

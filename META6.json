@@ -1,0 +1,36 @@
+{
+  "auth": "zef:apogee",
+  "authors": [
+    "Matt Doughty"
+  ],
+  "build-depends": [
+  ],
+  "depends": [
+    "CRoaring",
+    "JSON::Fast"
+  ],
+  "description": "High-level tag system built on CRoaring bitmaps with boolean, categorical, and numeric range query support",
+  "license": "Artistic-2.0",
+  "name": "Roaring::Tags",
+  "perl": "6.d",
+  "provides": {
+    "Roaring::Tags": "lib/Roaring/Tags.rakumod",
+    "Roaring::Tags::NumericIndex": "lib/Roaring/Tags/NumericIndex.rakumod",
+    "Roaring::Tags::Query": "lib/Roaring/Tags/Query.rakumod",
+    "Roaring::Tags::Query::Term": "lib/Roaring/Tags/Query.rakumod",
+    "Roaring::Tags::Storage": "lib/Roaring/Tags/Storage.rakumod"
+  },
+  "resources": [
+  ],
+  "source-url": "https://github.com/m-doughty/Roaring-Tags.git",
+  "tags": [
+    "bitmap",
+    "tags",
+    "roaring",
+    "filter",
+    "index"
+  ],
+  "test-depends": [
+  ],
+  "version": "0.1.0"
+}

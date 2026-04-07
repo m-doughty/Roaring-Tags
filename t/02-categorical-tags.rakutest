@@ -1,0 +1,65 @@
+use Test;
+use lib 'lib', '../CRoaring/lib';
+use Roaring::Tags;
+use CRoaring;
+
+plan 7;
+
+subtest 'tag with colon syntax' => {
+	plan 1;
+	my Roaring::Tags $t .= new;
+	$t.tag('genre:fantasy', 1);
+	ok $t.has-tag('genre:fantasy', 1), 'Colon syntax works';
+};
+
+subtest 'tag two-arg form' => {
+	plan 1;
+	my Roaring::Tags $t .= new;
+	$t.tag('genre', 'scifi', 2);
+	ok $t.has-tag('genre:scifi', 2), 'Two-arg form creates correct key';
+};
+
+subtest 'Same doc, multiple values for same field' => {
+	plan 2;
+	my Roaring::Tags $t .= new;
+	$t.tag('genre:fantasy', 1);
+	$t.tag('genre:romance', 1);
+	ok $t.has-tag('genre:fantasy', 1), 'Has fantasy';
+	ok $t.has-tag('genre:romance', 1), 'Has romance';
+};
+
+subtest 'query single-arg and two-arg both work' => {
+	plan 2;
+	my Roaring::Tags $t .= new;
+	$t.tag('genre:fantasy', 1);
+	$t.tag('genre:fantasy', 2);
+	is $t.query('genre:fantasy').cardinality, 2, 'Single-arg query';
+	is $t.query('genre', 'fantasy').cardinality, 2, 'Two-arg query';
+};
+
+subtest 'field-values returns all values for field' => {
+	plan 1;
+	my Roaring::Tags $t .= new;
+	$t.tag('genre:fantasy', 1);
+	$t.tag('genre:scifi', 2);
+	$t.tag('genre:romance', 3);
+	is-deeply $t.field-values('genre').List, ('fantasy', 'romance', 'scifi'),
+		'All values returned sorted';
+};
+
+subtest 'fields includes categorical field names' => {
+	plan 1;
+	my Roaring::Tags $t .= new;
+	$t.tag('genre:fantasy', 1);
+	$t.tag('rating:safe', 1);
+	ok 'genre' (elem) $t.fields, 'genre in fields';
+};
+
+subtest 'boolean-tags excludes categorical keys' => {
+	plan 2;
+	my Roaring::Tags $t .= new;
+	$t.tag('nsfw', 1);
+	$t.tag('genre:fantasy', 2);
+	ok 'nsfw' (elem) $t.boolean-tags, 'nsfw is a boolean tag';
+	nok 'genre:fantasy' (elem) $t.boolean-tags, 'genre:fantasy not in boolean-tags';
+};

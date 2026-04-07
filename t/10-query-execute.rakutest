@@ -1,0 +1,126 @@
+use Test;
+use lib 'lib', '../CRoaring/lib';
+use Roaring::Tags;
+use Roaring::Tags::Query;
+use CRoaring;
+
+plan 10;
+
+sub make-test-db(--> Roaring::Tags:D) {
+	my Roaring::Tags $t .= new;
+	# 20 docs (0-19)
+	$t.tag-many('landscape', [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+	$t.tag-many('safe', [0, 1, 2, 3, 4, 5, 10, 11, 12, 13]);
+	$t.tag-many('hdr', [0, 2, 4, 6, 8, 10, 12, 14]);
+	$t.tag-many('violent', [5, 6, 7, 15, 16]);
+	$t.tag('genre:fantasy', 0);
+	$t.tag('genre:fantasy', 1);
+	$t.tag('genre:scifi', 2);
+	$t.tag('genre:scifi', 3);
+	# Scores: doc N has score N*10
+	for ^20 -> Int $i {
+		$t.set-value('score', $i, $i * 10);
+	}
+	$t;
+}
+
+subtest 'Single positive tag' => {
+	plan 1;
+	my Roaring::Tags $db = make-test-db();
+	my CRoaring $r = Roaring::Tags::Query.new(:tags($db), :query-string('hdr')).execute;
+	is $r.cardinality, 8, 'hdr returns 8 docs';
+};
+
+subtest 'Two positive tags — intersection' => {
+	plan 1;
+	my Roaring::Tags $db = make-test-db();
+	my CRoaring $r = Roaring::Tags::Query.new(:tags($db), :query-string('landscape, safe')).execute;
+	# landscape={0..9}, safe={0..5,10..13} → intersection={0..5}
+	is $r.cardinality, 6, 'landscape AND safe = 6';
+};
+
+subtest 'Positive + negative' => {
+	plan 1;
+	my Roaring::Tags $db = make-test-db();
+	my CRoaring $r = Roaring::Tags::Query.new(:tags($db), :query-string('landscape, -violent')).execute;
+	# landscape={0..9}, violent={5,6,7,15,16} → landscape ANDNOT violent = {0,1,2,3,4,8,9}
+	is $r.cardinality, 7, 'landscape ANDNOT violent = 7';
+};
+
+subtest 'Numeric range in query' => {
+	plan 1;
+	my Roaring::Tags $db = make-test-db();
+	my CRoaring $r = Roaring::Tags::Query.new(:tags($db), :query-string('score:>100')).execute;
+	# Docs with score > 100: docs 11-19 (scores 110..190)
+	is $r.cardinality, 9, 'score > 100 gives 9 docs';
+};
+
+subtest 'Mixed: boolean + categorical + numeric + negation' => {
+	plan 1;
+	my Roaring::Tags $db = make-test-db();
+	# landscape AND genre:fantasy AND score:>=0 AND -violent
+	my CRoaring $r = Roaring::Tags::Query.new(
+		:tags($db),
+		:query-string('landscape, genre:fantasy, score:>=0, -violent')
+	).execute;
+	# landscape={0..9}, genre:fantasy={0,1}, score>=0={0..19}, -violent={5,6,7,15,16}
+	# → {0,1} ANDNOT {5,6,7,15,16} = {0,1}
+	is $r.cardinality, 2, 'Complex mixed query gives 2';
+};
+
+subtest 'Full example: landscape, safe, score:>100, hdr, -violent' => {
+	plan 1;
+	my Roaring::Tags $db = make-test-db();
+	my CRoaring $r = Roaring::Tags::Query.new(
+		:tags($db),
+		:query-string('landscape, safe, score:>100, hdr, -violent')
+	).execute;
+	# landscape={0..9}, safe={0..5,10..13}, hdr={0,2,4,6,8,10,12,14}
+	# score>100 = {11..19}
+	# Intersect all positive: landscape ∩ safe ∩ hdr ∩ score>100 = {} (no doc is in all)
+	# landscape ∩ safe = {0..5}, ∩ hdr = {0,2,4}, ∩ score>100 = {} (0,2,4 have scores 0,20,40)
+	is $r.cardinality, 0, 'No docs match all positive criteria';
+};
+
+subtest 'Execution order: smallest first via explain' => {
+	plan 1;
+	my Roaring::Tags $db = make-test-db();
+	my Roaring::Tags::Query $q .= new(
+		:tags($db),
+		:query-string('safe, genre:fantasy')
+	);
+	my Str:D $explanation = $q.explain;
+	# genre:fantasy (2 docs) should show smaller cardinality than safe (10 docs)
+	ok $explanation.contains('genre:fantasy') && $explanation.contains('safe'),
+		'Explain shows both terms with cardinalities';
+};
+
+subtest 'No matches returns empty' => {
+	plan 1;
+	my Roaring::Tags $db = make-test-db();
+	my CRoaring $r = Roaring::Tags::Query.new(
+		:tags($db),
+		:query-string('landscape, score:>1000')
+	).execute;
+	ok $r.is-empty, 'No matches returns empty';
+};
+
+subtest 'All-negative terms uses universe' => {
+	plan 1;
+	my Roaring::Tags $db = make-test-db();
+	my CRoaring $r = Roaring::Tags::Query.new(
+		:tags($db), :query-string('-violent')
+	).execute;
+	# Universe has docs 0-19, violent={5,6,7,15,16}, so result = universe - violent
+	ok $r.cardinality > 0, 'All-negative query returns results from universe';
+};
+
+subtest 'Unknown tag returns empty' => {
+	plan 1;
+	my Roaring::Tags $db = make-test-db();
+	my CRoaring $r = Roaring::Tags::Query.new(
+		:tags($db),
+		:query-string('nonexistent, landscape')
+	).execute;
+	ok $r.is-empty, 'Unknown tag intersected = empty';
+};

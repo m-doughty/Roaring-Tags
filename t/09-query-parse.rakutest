@@ -1,0 +1,103 @@
+use Test;
+use lib 'lib', '../CRoaring/lib';
+use Roaring::Tags::Query;
+
+plan 12;
+
+# Helper: parse query and return flat list of terms.
+# For queries with only negative terms, we parse the grammar directly
+# to avoid the positive-term validation in Query.new.
+sub parse(Str:D $q --> List) {
+	my $match = Roaring::Tags::Query::Grammar.parse(
+		$q, :actions(Roaring::Tags::Query::Actions.new)
+	);
+	die "Parse failed: $q" unless $match.defined;
+	$match.made.collect-terms;
+}
+
+subtest 'Single boolean tag' => {
+	plan 3;
+	my @t = parse('landscape');
+	is @t.elems, 1, 'One term';
+	ok @t[0].is-tag, 'Is tag';
+	is @t[0].tag, 'landscape', 'Tag is landscape';
+};
+
+subtest 'Negated tag' => {
+	plan 2;
+	my @t = parse('-violent');
+	ok @t[0].negated, 'Is negated';
+	is @t[0].tag, 'violent', 'Tag is violent';
+};
+
+subtest 'Categorical tag' => {
+	plan 2;
+	my @t = parse('genre:fantasy');
+	ok @t[0].is-tag, 'Is tag';
+	is @t[0].tag, 'genre:fantasy', 'Full key preserved';
+};
+
+subtest 'Numeric >N' => {
+	plan 3;
+	my @t = parse('score:>100');
+	ok @t[0].is-numeric, 'Is numeric';
+	is @t[0].field, 'score', 'Field is score';
+	is @t[0].gt, 100, 'gt=100';
+};
+
+subtest 'Numeric >=N' => {
+	plan 2;
+	my @t = parse('score:>=100');
+	is @t[0].field, 'score', 'Field is score';
+	is @t[0].gte, 100, 'gte=100';
+};
+
+subtest 'Numeric <N' => {
+	plan 2;
+	my @t = parse('score:<50');
+	is @t[0].field, 'score', 'Field is score';
+	is @t[0].lt, 50, 'lt=50';
+};
+
+subtest 'Numeric <=N' => {
+	plan 2;
+	my @t = parse('score:<=50');
+	is @t[0].field, 'score', 'Field is score';
+	is @t[0].lte, 50, 'lte=50';
+};
+
+subtest 'Numeric range N..M' => {
+	plan 3;
+	my @t = parse('score:100..500');
+	is @t[0].field, 'score', 'Field is score';
+	is @t[0].gte, 100, 'gte=100';
+	is @t[0].lte, 500, 'lte=500';
+};
+
+subtest 'Negated numeric' => {
+	plan 3;
+	my @t = parse('-score:>100');
+	ok @t[0].negated, 'Is negated';
+	ok @t[0].is-numeric, 'Is numeric';
+	is @t[0].gt, 100, 'gt=100';
+};
+
+subtest 'Complex multi-term query' => {
+	plan 3;
+	my @t = parse('landscape, safe, score:>100, hdr, -violent');
+	is @t.elems, 5, '5 terms';
+	is @t.grep({ !.negated }).elems, 4, '4 positive';
+	is @t.grep({ .negated }).elems, 1, '1 negative';
+};
+
+subtest 'Whitespace handling' => {
+	plan 2;
+	my @t = parse('  landscape ,  safe  ');
+	is @t.elems, 2, '2 terms';
+	is @t[0].tag, 'landscape', 'Trimmed correctly';
+};
+
+subtest 'Empty string dies' => {
+	plan 1;
+	dies-ok { parse('') }, 'Empty string dies';
+};

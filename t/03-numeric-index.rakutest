@@ -1,0 +1,146 @@
+use Test;
+use lib 'lib', '../CRoaring/lib';
+use Roaring::Tags::NumericIndex;
+use CRoaring;
+
+plan 13;
+
+subtest 'Insert and get' => {
+	plan 2;
+	my Roaring::Tags::NumericIndex $idx .= new;
+	$idx.insert(1, 100);
+	is $idx.get(1), 100, 'Get returns inserted value';
+	nok $idx.get(99).defined, 'Get returns undefined for absent doc';
+};
+
+subtest 'Update value (same doc, new value)' => {
+	plan 2;
+	my Roaring::Tags::NumericIndex $idx .= new;
+	$idx.insert(1, 100);
+	$idx.insert(1, 200);
+	is $idx.get(1), 200, 'Value updated';
+	is $idx.elems, 1, 'Still one entry';
+};
+
+subtest 'Remove doc' => {
+	plan 2;
+	my Roaring::Tags::NumericIndex $idx .= new;
+	$idx.insert(1, 100);
+	$idx.remove(1);
+	nok $idx.get(1).defined, 'Removed doc returns undefined';
+	is $idx.elems, 0, 'Elems is 0';
+};
+
+subtest 'Entries returns sorted list' => {
+	plan 1;
+	my Roaring::Tags::NumericIndex $idx .= new;
+	$idx.insert(3, 300);
+	$idx.insert(1, 100);
+	$idx.insert(2, 200);
+	my @e = $idx.entries;
+	is-deeply @e.map({ $_[0] }).List, (100, 200, 300), 'Entries sorted by value';
+};
+
+subtest 'Elems correct' => {
+	plan 2;
+	my Roaring::Tags::NumericIndex $idx .= new;
+	is $idx.elems, 0, 'Empty index has 0 elems';
+	$idx.insert(1, 10);
+	$idx.insert(2, 20);
+	is $idx.elems, 2, '2 after two inserts';
+};
+
+subtest 'from-entries restores state' => {
+	plan 2;
+	my Roaring::Tags::NumericIndex $idx .= new;
+	$idx.insert(1, 100);
+	$idx.insert(2, 200);
+	$idx.insert(3, 150);
+	my @entries = $idx.entries;
+
+	my Roaring::Tags::NumericIndex $restored = Roaring::Tags::NumericIndex.from-entries(@entries);
+	is $restored.get(1), 100, 'Doc 1 restored';
+	is $restored.elems, 3, 'All entries restored';
+};
+
+subtest 'Insert many values, all gettable' => {
+	plan 1;
+	my Roaring::Tags::NumericIndex $idx .= new;
+	for ^100 -> Int $i {
+		$idx.insert($i, $i * 10);
+	}
+	ok (^100).all.map({ $idx.get($_) == $_ * 10 }), 'All 100 values gettable';
+};
+
+subtest 'Remove nonexistent doc — no error' => {
+	plan 1;
+	my Roaring::Tags::NumericIndex $idx .= new;
+	lives-ok { $idx.remove(999) }, 'Remove absent doc does not error';
+};
+
+subtest 'Range query basic' => {
+	plan 4;
+	my Roaring::Tags::NumericIndex $idx .= new;
+	for ^10 -> Int $i {
+		$idx.insert($i, $i * 10);  # doc 0=0, doc 1=10, ... doc 9=90
+	}
+	my CRoaring $gt50 = $idx.range(:gt(50));
+	is $gt50.cardinality, 4, ':gt(50) gives docs with values 60,70,80,90';
+
+	my CRoaring $gte50 = $idx.range(:gte(50));
+	is $gte50.cardinality, 5, ':gte(50) gives docs with values 50,60,70,80,90';
+
+	my CRoaring $lt30 = $idx.range(:lt(30));
+	is $lt30.cardinality, 3, ':lt(30) gives docs with values 0,10,20';
+
+	my CRoaring $combined = $idx.range(:gte(20), :lt(60));
+	is $combined.cardinality, 4, ':gte(20),:lt(60) gives docs with values 20,30,40,50';
+};
+
+subtest 'Range query edge cases' => {
+	plan 3;
+	my Roaring::Tags::NumericIndex $idx .= new;
+	$idx.insert(1, 100);
+
+	my CRoaring $none = $idx.range(:gt(200));
+	ok $none.is-empty, 'No matches returns empty';
+
+	my CRoaring $exact = $idx.range(:gte(100), :lte(100));
+	is $exact.cardinality, 1, 'Exact match works';
+
+	my Roaring::Tags::NumericIndex $empty-idx .= new;
+	my CRoaring $empty-range = $empty-idx.range(:gt(0));
+	ok $empty-range.is-empty, 'Range on empty index returns empty';
+};
+
+# --- Dedupe and overlap tests ---
+
+subtest 'insert-many dedupes incoming doc-ids (last wins)' => {
+	plan 2;
+	my Roaring::Tags::NumericIndex $idx .= new;
+	$idx.insert-many(([1, 100], [1, 200], [1, 300]));
+	is $idx.get(1), 300, 'Last value wins for duplicate doc-id';
+	is $idx.elems, 1, 'Only 1 entry after deduped insert';
+};
+
+subtest 'insert-many updates existing entries' => {
+	plan 3;
+	my Roaring::Tags::NumericIndex $idx .= new;
+	$idx.insert-many(([1, 100], [2, 200]));
+	is $idx.get(1), 100, 'Initial value for doc 1';
+
+	$idx.insert-many(([1, 999], [3, 300]));
+	is $idx.get(1), 999, 'Doc 1 updated to 999';
+	is $idx.elems, 3, '3 entries total';
+};
+
+subtest 'insert-many overlap does not create duplicates in sorted index' => {
+	plan 2;
+	my Roaring::Tags::NumericIndex $idx .= new;
+	$idx.insert-many(([1, 50], [2, 100]));
+	$idx.insert-many(([1, 75],));  # Update doc 1 — trailing comma for single-element list
+	is $idx.elems, 2, 'Still 2 entries';
+	# Verify range query returns correct count (no phantom entries)
+	my CRoaring $all = $idx.range(:gte(0));
+	is $all.cardinality, 2, 'Range returns exactly 2 docs';
+};

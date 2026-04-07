@@ -1,0 +1,50 @@
+use Test;
+use lib 'lib', '../CRoaring/lib';
+use Roaring::Tags;
+
+plan 5;
+
+subtest 'Remove doc from multiple boolean tags' => {
+	plan 2;
+	my Roaring::Tags $t .= new;
+	$t.tag('nsfw', 42);
+	$t.tag('violent', 42);
+	$t.remove-doc(42);
+	nok $t.has-tag('nsfw', 42), 'Removed from nsfw';
+	nok $t.has-tag('violent', 42), 'Removed from violent';
+};
+
+subtest 'Remove doc from categorical tags' => {
+	plan 1;
+	my Roaring::Tags $t .= new;
+	$t.tag('genre:fantasy', 42);
+	$t.tag('genre:romance', 42);
+	$t.remove-doc(42);
+	is $t.doc-tags(42).elems, 0, 'No tags after removal';
+};
+
+subtest 'Remove doc with numeric values' => {
+	plan 1;
+	my Roaring::Tags $t .= new;
+	$t.set-value('score', 42, 100);
+	$t.set-value('tokens', 42, 500);
+	$t.remove-doc(42);
+	is $t.doc-values(42).elems, 0, 'No numeric values after removal';
+};
+
+subtest 'Remove nonexistent doc — no error' => {
+	plan 1;
+	my Roaring::Tags $t .= new;
+	$t.tag('nsfw', 1);
+	lives-ok { $t.remove-doc(999) }, 'Removing absent doc is fine';
+};
+
+subtest 'After removal, queries exclude that doc' => {
+	plan 2;
+	my Roaring::Tags $t .= new;
+	$t.tag-many('nsfw', [1, 2, 3]);
+	$t.set-value('score', 2, 100);
+	$t.remove-doc(2);
+	is $t.query('nsfw').cardinality, 2, 'Query excludes removed doc';
+	ok $t.range('score', :gte(0)).is-empty, 'Range excludes removed doc';
+};

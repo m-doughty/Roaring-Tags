@@ -1,0 +1,27 @@
+use Test;
+use lib 'lib', '../CRoaring/lib';
+use Roaring::Tags;
+use Roaring::Tags::Query;
+use CRoaring;
+
+plan 2;
+
+subtest 'search convenience method works' => {
+	plan 1;
+	my Roaring::Tags $t .= new;
+	$t.tag-many('a', [1, 2, 3, 4, 5]);
+	$t.tag-many('b', [3, 4, 5, 6, 7]);
+	my CRoaring $r = $t.search('a, b');
+	is $r.cardinality, 3, 'search returns intersection';
+};
+
+subtest 'search equivalent to manual Query' => {
+	plan 1;
+	my Roaring::Tags $t .= new;
+	$t.tag-many('x', [1, 2, 3]);
+	$t.tag-many('y', [2, 3, 4]);
+	$t.tag-many('z', [10, 11]);
+	my CRoaring $search-result = $t.search('x, y, -z');
+	my CRoaring $manual-result = Roaring::Tags::Query.new(:tags($t), :query-string('x, y, -z')).execute;
+	ok $search-result.equals($manual-result), 'Convenience matches manual';
+};

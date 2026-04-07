@@ -1,0 +1,291 @@
+use Test;
+use lib 'lib', '../CRoaring/lib';
+use Roaring::Tags;
+use Roaring::Tags::NumericIndex;
+use Roaring::Tags::Query;
+use CRoaring;
+
+plan 22;
+
+# === Fix #1: Ghost entries from remove on (value, doc_id) sorted index ===
+# The old advancing-pointer remove missed entries when doc_ids were not
+# monotonically increasing. This test constructs exactly that scenario.
+
+subtest 'Fix #1: remove-docs handles non-monotonic doc_id order' => {
+	plan 3;
+	my Roaring::Tags::NumericIndex $idx .= new;
+	# Insert docs with values that put doc_ids in non-ascending order:
+	# doc 5 → value 10, doc 3 → value 20, doc 7 → value 30
+	# Sorted by value: [(10,5), (20,3), (30,7)] — doc_ids are 5,3,7 (not ascending)
+	$idx.insert-many(([5, 10], [3, 20], [7, 30]));
+	is $idx.elems, 3, 'Three entries';
+
+	# Now insert-many with overlap: update docs 3 and 5
+	# This must remove both old entries before merging
+	$idx.insert-many(([3, 25], [5, 15]));
+	is $idx.elems, 3, 'Still 3 entries after update (no ghosts)';
+	is $idx.get(3), 25, 'Doc 3 updated correctly';
+};
+
+subtest 'Fix #1: range query returns no stale doc_ids after update' => {
+	plan 2;
+	my Roaring::Tags::NumericIndex $idx .= new;
+	# doc 1 starts with value 50
+	$idx.insert-many(([1, 50], [2, 100], [3, 150]));
+	# Update doc 1 to value 200 (was 50)
+	$idx.insert-many(([1, 200],));
+	# Range 0..100 should NOT contain doc 1 anymore
+	my CRoaring $low = $idx.range(:gte(0), :lte(100));
+	nok $low.contains(1), 'Doc 1 not in old range after update';
+	# Range 150..300 should contain doc 1
+	my CRoaring $high = $idx.range(:gte(150), :lte(300));
+	ok $high.contains(1), 'Doc 1 in new range after update';
+};
+
+subtest 'Fix #1: repeated insert-many does not grow index unboundedly' => {
+	plan 1;
+	my Roaring::Tags::NumericIndex $idx .= new;
+	$idx.insert-many(([1, 10], [2, 20], [3, 30]));
+	# Update same docs 10 times
+	for ^10 {
+		$idx.insert-many(([1, 10], [2, 20], [3, 30]));
+	}
+	is $idx.elems, 3, 'Index stays at 3 entries after 10 redundant updates';
+};
+
+# === Fix #2: query() on missing tag no longer leaks ===
+
+subtest 'Fix #2: query unknown tag returns empty owned bitmap' => {
+	plan 2;
+	my Roaring::Tags $t .= new;
+	my CRoaring $bm = $t.query('nonexistent');
+	ok $bm.is-empty, 'Empty bitmap for unknown tag';
+	# Should be safe to dispose — it's owned by caller
+	lives-ok { $bm.dispose }, 'Can dispose the returned bitmap';
+};
+
+# === Fix #3: query() returns clone, not live bitmap ===
+
+subtest 'Fix #3: query returns clone — disposing does not corrupt store' => {
+	plan 2;
+	my Roaring::Tags $t .= new;
+	$t.tag-many('test', [1, 2, 3]);
+	my CRoaring $bm = $t.query('test');
+	$bm.dispose;
+	# Store should be unaffected
+	is $t.count('test'), 3, 'Store intact after disposing query result';
+	ok $t.has-tag('test', 2), 'Can still query the tag';
+};
+
+subtest 'Fix #3: mutating query result does not affect store' => {
+	plan 2;
+	my Roaring::Tags $t .= new;
+	$t.tag-many('test', [1, 2, 3]);
+	my CRoaring $bm = $t.query('test');
+	$bm.add(99);
+	$bm.remove(1);
+	is $t.count('test'), 3, 'Store cardinality unchanged';
+	ok $t.has-tag('test', 1), 'Doc 1 still in store';
+};
+
+subtest 'Fix #3: two query calls return independent bitmaps' => {
+	plan 2;
+	my Roaring::Tags $t .= new;
+	$t.tag-many('x', [1, 2, 3]);
+	my CRoaring $a = $t.query('x');
+	my CRoaring $b = $t.query('x');
+	$a.add(99);
+	nok $b.contains(99), 'Second query unaffected by first mutation';
+	$a.dispose;
+	is $b.cardinality, 3, 'Second query still valid after first disposed';
+};
+
+# === Fix #4: Exception in compound nodes cleans up ===
+
+subtest 'Fix #4: all-negative query uses universe' => {
+	plan 2;
+	my Roaring::Tags $t .= new;
+	$t.tag-many('a', [1, 2, 3]);
+	$t.tag-many('b', [4, 5]);
+	# Universe = {1,2,3,4,5}, -a = universe ANDNOT {1,2,3} = {4,5}
+	my CRoaring $r = $t.search('-a');
+	is $r.cardinality, 2, 'All-negative returns universe minus excluded';
+	ok $r.contains(4), 'Contains doc from non-excluded tag';
+	$r.dispose;
+};
+
+subtest 'Fix #4: search with unknown tag does not leak on empty intersection' => {
+	plan 1;
+	my Roaring::Tags $t .= new;
+	$t.tag-many('known', [1, 2, 3]);
+	my CRoaring $r = $t.search('known, nonexistent');
+	ok $r.is-empty, 'Intersection with unknown = empty, no crash';
+	$r.dispose;
+};
+
+# === Fix #5: No more sort_pairs abuse ===
+# This is implicitly tested by Fix #1 — the remove path no longer
+# uses sort_pairs with a dummy array. Verify the remove still works.
+
+subtest 'Fix #5: single remove works correctly' => {
+	plan 2;
+	my Roaring::Tags::NumericIndex $idx .= new;
+	$idx.insert-many(([1, 100], [2, 200], [3, 300]));
+	$idx.remove(2);
+	is $idx.elems, 2, '2 entries after remove';
+	nok $idx.get(2).defined, 'Doc 2 gone';
+};
+
+# === Regression: query + search round-trip after all fixes ===
+
+subtest 'Regression: full search pipeline after fixes' => {
+	plan 2;
+	my Roaring::Tags $t .= new;
+	$t.tag-many('landscape', [1, 2, 3, 4, 5]);
+	$t.tag-many('hdr', [1, 3, 5, 7]);
+	$t.tag-many('violent', [3, 7]);
+	for 1..7 -> Int $i { $t.set-value('score', $i, $i * 10) }
+
+	my CRoaring $r = $t.search('landscape, hdr, score:>=30, -violent');
+	# landscape={1,2,3,4,5} ∩ hdr={1,3,5,7} = {1,3,5}
+	# ∩ score>=30 = {3,4,5,6,7} → {3,5}
+	# ANDNOT violent={3,7} → {5}
+	is $r.cardinality, 1, 'Complex search returns 1 result';
+	ok $r.contains(5), 'Result is doc 5';
+	$r.dispose;
+};
+
+subtest 'Regression: explain does not leak bitmaps' => {
+	plan 1;
+	my Roaring::Tags $t .= new;
+	$t.tag-many('a', [1, 2, 3]);
+	$t.tag-many('b', [2, 3, 4]);
+	for 1..4 -> Int $i { $t.set-value('score', $i, $i * 100) }
+
+	my Roaring::Tags::Query $q .= new(
+		:tags($t), :query-string('a, b, score:>100')
+	);
+	my Str:D $e = $q.explain;
+	ok $e.contains('cardinality'), 'Explain produces output without crash';
+};
+
+# === Universe tests ===
+
+subtest 'Universe: negative-only with multiple exclusions' => {
+	plan 2;
+	my Roaring::Tags $t .= new;
+	$t.tag-many('a', [1, 2, 3]);
+	$t.tag-many('b', [3, 4, 5]);
+	$t.tag-many('c', [6, 7]);
+	# Universe = {1..7}
+	my CRoaring $r = $t.search('-a, -b');
+	# universe ANDNOT {1,2,3} ANDNOT {3,4,5} = {6,7}
+	is $r.cardinality, 2, 'Two exclusions leave only untagged docs';
+	is-deeply $r.to-array.List, (6, 7), 'Correct docs remain';
+	$r.dispose;
+};
+
+subtest 'Universe: negative query with numeric-only docs' => {
+	plan 1;
+	my Roaring::Tags $t .= new;
+	$t.tag-many('bad', [1, 2]);
+	$t.set-value('score', 3, 100);  # doc 3 only has numeric, no boolean tag
+	# Universe = {1,2,3}
+	my CRoaring $r = $t.search('-bad');
+	# universe ANDNOT {1,2} = {3}
+	is $r.cardinality, 1, 'Numeric-only doc appears in negative query';
+	$r.dispose;
+};
+
+subtest 'Universe: remove-doc shrinks universe' => {
+	plan 1;
+	my Roaring::Tags $t .= new;
+	$t.tag-many('x', [1, 2, 3, 4, 5]);
+	$t.remove-doc(3);
+	my CRoaring $r = $t.search('-x');
+	# Universe was {1..5}, removed 3 → {1,2,4,5}
+	# x still has {1,2,4,5} (3 was removed from x too)
+	# -x = universe ANDNOT x = {} (all remaining are still in x)
+	ok $r.is-empty, 'Remove-doc updates universe correctly';
+	$r.dispose;
+};
+
+subtest 'Universe: save/load preserves universe' => {
+	plan 1;
+	my Roaring::Tags $t .= new;
+	$t.tag-many('a', [1, 2, 3]);
+	$t.tag-many('b', [4, 5]);
+
+	my IO::Path $dir = $*TMPDIR.add("universe-save-test-{$*PID}");
+	$t.save($dir);
+	my Roaring::Tags $loaded = Roaring::Tags.load($dir);
+
+	my CRoaring $r = $loaded.search('-a');
+	is-deeply $r.to-array.List, (4, 5), 'Universe preserved through save/load';
+	$r.dispose;
+
+	# Cleanup
+	sub rm-rf(IO::Path $p) {
+		if $p.d { for $p.dir -> $c { rm-rf($c) }; $p.rmdir }
+		elsif $p.e { $p.unlink }
+	}
+	rm-rf($dir);
+};
+
+# === Universe shrinkage on untag / remove-value ===
+
+subtest 'Universe: untag removes doc when no other tags remain' => {
+	plan 2;
+	my Roaring::Tags $t .= new;
+	$t.tag('only-tag', 1);
+	$t.tag('only-tag', 2);
+	ok $t.universe.contains(1), 'Doc 1 in universe before untag';
+	$t.untag('only-tag', 1);
+	nok $t.universe.contains(1), 'Doc 1 removed from universe after losing last tag';
+};
+
+subtest 'Universe: untag keeps doc when other tags remain' => {
+	plan 1;
+	my Roaring::Tags $t .= new;
+	$t.tag('a', 1);
+	$t.tag('b', 1);
+	$t.untag('a', 1);
+	ok $t.universe.contains(1), 'Doc 1 stays in universe — still has tag b';
+};
+
+subtest 'Universe: untag keeps doc when numeric value remains' => {
+	plan 1;
+	my Roaring::Tags $t .= new;
+	$t.tag('a', 1);
+	$t.set-value('score', 1, 100);
+	$t.untag('a', 1);
+	ok $t.universe.contains(1), 'Doc 1 stays in universe — still has numeric value';
+};
+
+subtest 'Universe: untag-many removes orphaned docs' => {
+	plan 2;
+	my Roaring::Tags $t .= new;
+	$t.tag-many('x', [1, 2, 3]);
+	$t.tag('y', 2);  # doc 2 has two tags
+	$t.untag-many('x', [1, 2, 3]);
+	nok $t.universe.contains(1), 'Doc 1 removed — no tags left';
+	ok $t.universe.contains(2), 'Doc 2 stays — still has tag y';
+};
+
+subtest 'Universe: remove-value removes doc when no tags remain' => {
+	plan 2;
+	my Roaring::Tags $t .= new;
+	$t.set-value('score', 1, 100);
+	ok $t.universe.contains(1), 'Doc 1 in universe with only numeric value';
+	$t.remove-value('score', 1);
+	nok $t.universe.contains(1), 'Doc 1 removed from universe after value removed';
+};
+
+subtest 'Universe: remove-value keeps doc when tags remain' => {
+	plan 1;
+	my Roaring::Tags $t .= new;
+	$t.tag('a', 1);
+	$t.set-value('score', 1, 100);
+	$t.remove-value('score', 1);
+	ok $t.universe.contains(1), 'Doc 1 stays — still has tag a';
+};

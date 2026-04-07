@@ -1,0 +1,75 @@
+use Test;
+use lib 'lib', '../CRoaring/lib';
+use Roaring::Tags;
+use CRoaring;
+
+plan 9;
+
+subtest 'Tag doc, has-tag True' => {
+	plan 1;
+	my Roaring::Tags $t .= new;
+	$t.tag('nsfw', 42);
+	ok $t.has-tag('nsfw', 42), 'Tagged doc found';
+};
+
+subtest 'Untag doc, has-tag False' => {
+	plan 1;
+	my Roaring::Tags $t .= new;
+	$t.tag('nsfw', 42);
+	$t.untag('nsfw', 42);
+	nok $t.has-tag('nsfw', 42), 'Untagged doc not found';
+};
+
+subtest 'tag-many bulk' => {
+	plan 2;
+	my Roaring::Tags $t .= new;
+	$t.tag-many('violent', [1, 2, 3, 4, 5]);
+	ok $t.has-tag('violent', 3), 'Bulk-tagged doc found';
+	is $t.count('violent'), 5, '5 docs tagged';
+};
+
+subtest 'untag-many bulk' => {
+	plan 1;
+	my Roaring::Tags $t .= new;
+	$t.tag-many('test', [1, 2, 3]);
+	$t.untag-many('test', [1, 3]);
+	is $t.count('test'), 1, 'Only 1 remains after bulk untag';
+};
+
+subtest 'Tag same doc twice, cardinality still 1' => {
+	plan 1;
+	my Roaring::Tags $t .= new;
+	$t.tag('nsfw', 42);
+	$t.tag('nsfw', 42);
+	is $t.count('nsfw'), 1, 'Duplicate tag does not increase count';
+};
+
+subtest 'Untag absent doc — no error' => {
+	plan 1;
+	my Roaring::Tags $t .= new;
+	lives-ok { $t.untag('nsfw', 999) }, 'Untag nonexistent tag/doc is fine';
+};
+
+subtest 'query returns bitmap with correct contents' => {
+	plan 2;
+	my Roaring::Tags $t .= new;
+	$t.tag-many('nsfw', [10, 20, 30]);
+	my CRoaring $bm = $t.query('nsfw');
+	is $bm.cardinality, 3, 'Query returns 3 elements';
+	ok $bm.contains(20), 'Contains expected doc';
+};
+
+subtest 'query for unknown tag returns empty bitmap' => {
+	plan 1;
+	my Roaring::Tags $t .= new;
+	my CRoaring $bm = $t.query('nonexistent');
+	ok $bm.is-empty, 'Unknown tag query returns empty';
+};
+
+subtest 'count correct' => {
+	plan 2;
+	my Roaring::Tags $t .= new;
+	is $t.count('nsfw'), 0, 'Count 0 for absent tag';
+	$t.tag-many('nsfw', [1, 2, 3]);
+	is $t.count('nsfw'), 3, 'Count 3 after tagging';
+};

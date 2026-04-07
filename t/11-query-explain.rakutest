@@ -1,0 +1,48 @@
+use Test;
+use lib 'lib', '../CRoaring/lib';
+use Roaring::Tags;
+use Roaring::Tags::Query;
+
+plan 4;
+
+sub make-db(--> Roaring::Tags:D) {
+	my Roaring::Tags $t .= new;
+	$t.tag-many('large', (^10000).list);
+	$t.tag-many('small', [1, 2, 3]);
+	$t.tag-many('medium', (^500).list);
+	$t.tag-many('excluded', [99, 100]);
+	$t;
+}
+
+subtest 'explain returns string' => {
+	plan 1;
+	my Roaring::Tags $db = make-db();
+	my Str:D $e = Roaring::Tags::Query.new(:tags($db), :query-string('small')).explain;
+	ok $e.chars > 0, 'Non-empty string returned';
+};
+
+subtest 'explain shows query string' => {
+	plan 1;
+	my Roaring::Tags $db = make-db();
+	my Str:D $e = Roaring::Tags::Query.new(:tags($db), :query-string('large, small, -excluded')).explain;
+	ok $e.contains('large, small, -excluded'), 'Shows original query';
+};
+
+subtest 'explain shows cardinalities' => {
+	plan 2;
+	my Roaring::Tags $db = make-db();
+	my Str:D $e = Roaring::Tags::Query.new(:tags($db), :query-string('large, small')).explain;
+	ok $e.contains('cardinality: 10000'), 'Shows large cardinality';
+	ok $e.contains('cardinality: 3'), 'Shows small cardinality';
+};
+
+subtest 'explain shows tree structure for OR queries' => {
+	plan 2;
+	my Roaring::Tags $db = make-db();
+	my Str:D $e = Roaring::Tags::Query.new(
+		:tags($db),
+		:query-string('(small, medium) OR (large), -excluded')
+	).explain;
+	ok $e.contains('OR'), 'Shows OR node';
+	ok $e.contains('AND'), 'Shows AND node';
+};

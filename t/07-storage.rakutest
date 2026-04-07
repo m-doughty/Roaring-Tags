@@ -1,0 +1,109 @@
+use Test;
+use lib 'lib', '../CRoaring/lib';
+use Roaring::Tags;
+use CRoaring;
+
+plan 7;
+
+my IO::Path $tmpdir = $*TMPDIR.add("roaring-tags-storage-test-{$*PID}");
+$tmpdir.mkdir;
+
+END {
+	sub rm-rf(IO::Path $path) {
+		if $path.d {
+			for $path.dir -> IO::Path $child {
+				rm-rf($child);
+			}
+			$path.rmdir;
+		} elsif $path.e {
+			$path.unlink;
+		}
+	}
+	rm-rf($tmpdir) if $tmpdir.d;
+}
+
+sub save-dir(Str:D $name --> IO::Path:D) { $tmpdir.add($name) }
+
+subtest 'Save empty, load, verify empty' => {
+	plan 2;
+	my Roaring::Tags $t .= new;
+	my IO::Path $dir = save-dir('empty');
+	$t.save($dir);
+	my Roaring::Tags $loaded = Roaring::Tags.load($dir);
+	is $loaded.tags.elems, 0, 'No tags';
+	is $loaded.numeric-fields.elems, 0, 'No numeric fields';
+};
+
+subtest 'Save with boolean tags, load, verify' => {
+	plan 2;
+	my Roaring::Tags $t .= new;
+	$t.tag-many('nsfw', [1, 2, 3]);
+	$t.tag-many('violent', [2, 4]);
+	my IO::Path $dir = save-dir('boolean');
+	$t.save($dir);
+
+	my Roaring::Tags $loaded = Roaring::Tags.load($dir);
+	is $loaded.count('nsfw'), 3, 'nsfw count preserved';
+	is $loaded.count('violent'), 2, 'violent count preserved';
+};
+
+subtest 'Save with categorical tags, load, verify' => {
+	plan 2;
+	my Roaring::Tags $t .= new;
+	$t.tag('genre:fantasy', 1);
+	$t.tag('genre:scifi', 2);
+	my IO::Path $dir = save-dir('categorical');
+	$t.save($dir);
+
+	my Roaring::Tags $loaded = Roaring::Tags.load($dir);
+	ok $loaded.has-tag('genre:fantasy', 1), 'Categorical tag preserved';
+	is-deeply $loaded.field-values('genre').List, ('fantasy', 'scifi'), 'Field values preserved';
+};
+
+subtest 'Save with numeric indices, load, verify range queries' => {
+	plan 2;
+	my Roaring::Tags $t .= new;
+	for ^10 -> Int $i {
+		$t.set-value('score', $i, $i * 10);
+	}
+	my IO::Path $dir = save-dir('numeric');
+	$t.save($dir);
+
+	my Roaring::Tags $loaded = Roaring::Tags.load($dir);
+	is $loaded.get-value('score', 5), 50, 'Numeric value preserved';
+	is $loaded.range('score', :gte(50)).cardinality, 5, 'Range query works after load';
+};
+
+subtest 'Full round-trip preserves all data' => {
+	plan 5;
+	my Roaring::Tags $t .= new;
+	$t.tag-many('nsfw', [1, 2, 3]);
+	$t.tag('genre:fantasy', 1);
+	$t.tag('genre:scifi', 2);
+	$t.set-value('score', 1, 100);
+	$t.set-value('score', 2, 200);
+	my IO::Path $dir = save-dir('full-roundtrip');
+	$t.save($dir);
+
+	my Roaring::Tags $loaded = Roaring::Tags.load($dir);
+	is $loaded.count('nsfw'), 3, 'Boolean preserved';
+	ok $loaded.has-tag('genre:fantasy', 1), 'Categorical preserved';
+	is $loaded.get-value('score', 1), 100, 'Numeric preserved';
+	is $loaded.range('score', :gte(150)).cardinality, 1, 'Range works';
+	is-deeply $loaded.doc-tags(1).List, ('genre:fantasy', 'nsfw'), 'doc-tags works';
+};
+
+subtest 'Load from nonexistent path dies' => {
+	plan 1;
+	dies-ok { Roaring::Tags.load(save-dir('nonexistent')) }, 'Dies on missing dir';
+};
+
+subtest 'Tags with special characters survive round-trip' => {
+	plan 1;
+	my Roaring::Tags $t .= new;
+	$t.tag('rating:PG-13', 1);
+	my IO::Path $dir = save-dir('special-chars');
+	$t.save($dir);
+	my Roaring::Tags $loaded = Roaring::Tags.load($dir);
+	ok $loaded.has-tag('rating:PG-13', 1), 'Special char tag preserved';
+};

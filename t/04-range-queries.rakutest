@@ -1,0 +1,89 @@
+use Test;
+use lib 'lib', '../CRoaring/lib';
+use Roaring::Tags;
+use CRoaring;
+
+plan 10;
+
+sub make-scored-tags(--> Roaring::Tags:D) {
+	my Roaring::Tags $t .= new;
+	# 10 docs, scores: doc0=0, doc1=10, doc2=20, ..., doc9=90
+	for ^10 -> Int $i {
+		$t.set-value('score', $i, $i * 10);
+	}
+	$t;
+}
+
+subtest ':gt(50)' => {
+	plan 1;
+	my Roaring::Tags $t = make-scored-tags();
+	my CRoaring $r = $t.range('score', :gt(50));
+	is $r.cardinality, 4, 'Docs with score > 50 (60,70,80,90)';
+};
+
+subtest ':gte(50)' => {
+	plan 1;
+	my Roaring::Tags $t = make-scored-tags();
+	my CRoaring $r = $t.range('score', :gte(50));
+	is $r.cardinality, 5, 'Docs with score >= 50';
+};
+
+subtest ':lt(30)' => {
+	plan 1;
+	my Roaring::Tags $t = make-scored-tags();
+	my CRoaring $r = $t.range('score', :lt(30));
+	is $r.cardinality, 3, 'Docs with score < 30 (0,10,20)';
+};
+
+subtest ':lte(30)' => {
+	plan 1;
+	my Roaring::Tags $t = make-scored-tags();
+	my CRoaring $r = $t.range('score', :lte(30));
+	is $r.cardinality, 4, 'Docs with score <= 30';
+};
+
+subtest ':gte(20), :lt(60)' => {
+	plan 1;
+	my Roaring::Tags $t = make-scored-tags();
+	my CRoaring $r = $t.range('score', :gte(20), :lt(60));
+	is $r.cardinality, 4, 'Docs with 20 <= score < 60';
+};
+
+subtest ':gt(0), :lte(50)' => {
+	plan 1;
+	my Roaring::Tags $t = make-scored-tags();
+	my CRoaring $r = $t.range('score', :gt(0), :lte(50));
+	is $r.cardinality, 5, 'Docs with 0 < score <= 50';
+};
+
+subtest 'No matches returns empty' => {
+	plan 1;
+	my Roaring::Tags $t = make-scored-tags();
+	my CRoaring $r = $t.range('score', :gt(1000));
+	ok $r.is-empty, 'No matches returns empty bitmap';
+};
+
+subtest 'Unknown field returns empty' => {
+	plan 1;
+	my Roaring::Tags $t .= new;
+	my CRoaring $r = $t.range('nonexistent', :gt(0));
+	ok $r.is-empty, 'Unknown field returns empty';
+};
+
+subtest 'Boundary exact match' => {
+	plan 1;
+	my Roaring::Tags $t = make-scored-tags();
+	my CRoaring $r = $t.range('score', :gte(50), :lte(50));
+	is $r.cardinality, 1, 'Exact boundary match returns 1';
+};
+
+subtest 'Large dataset range correctness' => {
+	plan 2;
+	my Roaring::Tags $t .= new;
+	for ^10000 -> Int $i {
+		$t.set-value('x', $i, $i);
+	}
+	my CRoaring $r = $t.range('x', :gte(5000), :lt(6000));
+	is $r.cardinality, 1000, '1000 docs in range 5000..5999';
+	ok $r.contains(5000), 'Contains lower bound';
+};
