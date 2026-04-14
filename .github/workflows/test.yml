@@ -13,12 +13,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # ARM Linux and ARM Windows runners are intentionally omitted:
+        # Raku/setup-raku@v1 doesn't publish prebuilt Rakudo tarballs
+        # for those platforms, so we can't run Raku tests there. The
+        # CRoaring prebuilts for those arches are validated by the
+        # CRoaring build-binaries.yml workflow (successful link +
+        # correct symbol exports + universal-binary layout); first-
+        # party end-to-end testing picks up as soon as upstream Raku
+        # ships ARM prebuilts, or via a Docker-container-based job
+        # against rakudo/rakudo-star multi-arch images.
         os:
           - ubuntu-latest         # Linux x86_64 glibc
-          - ubuntu-22.04-arm      # Linux aarch64 glibc
           - macos-latest          # macOS arm64 (uses universal CRoaring dylib)
           - windows-latest        # Windows x86_64
-          - windows-11-arm        # Windows arm64
         raku-version:
           - 'latest'
     runs-on: ${{ matrix.os }}

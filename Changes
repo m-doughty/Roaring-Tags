@@ -2,15 +2,25 @@ Revision history for Roaring::Tags
 
 {{$NEXT}}
 
+0.2.1  2026-04-14T23:03:47+01:00
+    - Update Github actions
+
 0.2.0  2026-04-14T22:53:46+01:00
     - Added auth specifiers to META6.json dependencies
-    - Expanded CI matrix to five platforms: Linux x86_64 + aarch64
-      glibc, macOS (arm64 with universal CRoaring dylib), Windows
-      x86_64 + arm64. Doubles as cross-platform integration testing
-      for CRoaring's prebuilt-binary-first install path (0.2.0+).
+    - CI doubles as cross-platform integration testing for CRoaring's
+      prebuilt-binary-first install path (0.2.0+): `zef install
+      Roaring::Tags` pulls CRoaring, triggers Build.rakumod, exercises
+      the prebuilt download + SHA verify + FFI load end-to-end on
+      every matrix entry.
     - Added comment explaining the Windows VS Dev Environment step:
       kept as belt-and-braces since CRoaring's source-compile
       fallback still needs MSVC if prebuilt download fails.
+    - ARM Linux and ARM Windows runners intentionally omitted —
+      `Raku/setup-raku@v1` lacks prebuilt Rakudo tarballs for those
+      platforms. CRoaring's ARM prebuilts are validated via its own
+      build-binaries.yml (link + symbol exports + checksum) and will
+      return to the matrix once upstream Raku publishes ARM builds or
+      we swap to a Docker-container-based job.
 
 0.1.1  2026-04-07T19:40:38+01:00
     - Added Windows CI support via MSVC
