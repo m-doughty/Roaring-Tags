@@ -6,8 +6,8 @@
   "build-depends": [
   ],
   "depends": [
-    "CRoaring",
-    "JSON::Fast"
+    "CRoaring:auth<zef:apogee>",
+    "JSON::Fast:ver<0.19>:auth<cpan:TIMOTIMO>"
   ],
   "description": "High-level tag system built on CRoaring bitmaps with boolean, categorical, and numeric range query support",
   "license": "Artistic-2.0",
@@ -32,5 +32,5 @@
   ],
   "test-depends": [
   ],
-  "version": "0.1.1"
+  "version": "0.2.0"
 }

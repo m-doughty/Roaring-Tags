@@ -2,6 +2,16 @@ Revision history for Roaring::Tags
 
 {{$NEXT}}
 
+0.2.0  2026-04-14T22:53:46+01:00
+    - Added auth specifiers to META6.json dependencies
+    - Expanded CI matrix to five platforms: Linux x86_64 + aarch64
+      glibc, macOS (arm64 with universal CRoaring dylib), Windows
+      x86_64 + arm64. Doubles as cross-platform integration testing
+      for CRoaring's prebuilt-binary-first install path (0.2.0+).
+    - Added comment explaining the Windows VS Dev Environment step:
+      kept as belt-and-braces since CRoaring's source-compile
+      fallback still needs MSVC if prebuilt download fails.
+
 0.1.1  2026-04-07T19:40:38+01:00
     - Added Windows CI support via MSVC
     - Fixed AND/OR precedence: AND (comma) now binds tighter than OR
