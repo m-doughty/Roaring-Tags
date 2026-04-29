@@ -2,6 +2,9 @@ Revision history for Roaring::Tags
 
 {{$NEXT}}
 
+0.2.2  2026-04-29T23:40:54+01:00
+    - Bump Github actions to use node 24.
+
 0.2.1  2026-04-14T23:03:47+01:00
     - Update Github actions
 

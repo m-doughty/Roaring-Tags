@@ -30,7 +30,7 @@ jobs:
           - 'latest'
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: Raku/setup-raku@v1
         with:
           raku-version: ${{ matrix.raku-version }}
@@ -39,7 +39,36 @@ jobs:
       # fails the fallback path needs MSVC to build from source.
       - name: Setup VS Dev Environment
         if: runner.os == 'Windows'
-        uses: compnerd/gha-setup-vsdevenv@v6
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          if (-not (Test-Path $vswhere)) { throw "vswhere.exe not found at $vswhere" }
+
+          $installPath = & $vswhere -nologo -latest -products * `
+              -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+              -property installationPath
+          if (-not $installPath) { throw 'No VS installation with VC.Tools.x86.x64 found' }
+          Write-Host "VS install: $installPath"
+
+          $vsdevcmd = Join-Path $installPath 'Common7\Tools\vsdevcmd.bat'
+          if (-not (Test-Path $vsdevcmd)) { throw "vsdevcmd.bat not found at $vsdevcmd" }
+
+          $arch = $env:PROCESSOR_ARCHITECTURE.ToLower()
+          $before = @{}
+          Get-ChildItem env: | ForEach-Object { $before[$_.Name] = $_.Value }
+
+          $lines = & cmd /c "`"$vsdevcmd`" -no_logo -host_arch=$arch -arch=$arch && set"
+          if ($LASTEXITCODE -ne 0) { throw "vsdevcmd failed (exit $LASTEXITCODE)" }
+
+          foreach ($line in $lines) {
+              if ($line -notmatch '^([^=]+)=(.*)$') { continue }
+              $name  = $Matches[1]
+              $value = $Matches[2]
+              if ($before.ContainsKey($name) -and $before[$name] -eq $value) { continue }
+              Add-Content -Path $env:GITHUB_ENV -Value "$name=$value"
+          }
       - name: Install Dependencies
         run: zef install --/test --test-depends --deps-only .
       - name: Install App::Prove6
