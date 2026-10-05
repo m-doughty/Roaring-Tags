@@ -1,5 +1,5 @@
 use Test;
-use lib 'lib', '../CRoaring/lib';
+use lib 'lib';
 use Roaring::Tags::Query;
 
 plan 12;

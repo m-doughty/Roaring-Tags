@@ -2,6 +2,13 @@ Revision history for Roaring::Tags
 
 {{$NEXT}}
 
+0.3.0  2026-10-05T10:46:19+01:00
+
+    - Requires JSON::Fast 0.21.0 or later (zef:timo). 0.19 (cpan:TIMOTIMO)
+      fails its own tests under the RakuAST compiler frontend that Rakudo
+      2026.09 makes the default, so installing this distribution stopped
+      at that dependency.
+
 0.2.3  2026-08-21T21:37:37+01:00
     - Pin CRoaring version.
 
